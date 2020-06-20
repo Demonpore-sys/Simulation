@@ -174,11 +174,24 @@ def generate_cropped_image(combined_image, x_off=0, y_off=0, text='', overlap_da
     return subset_image
 
 
+def debug_calc(c_slits, c_pores):
+    c_slits.show()
+    c_pores.show()
+    combined = Image.new("1", (c_slits.width, c_slits.height), color=1)
+    combined.paste(c_slits, (0, 0))
+    c_pores_mask = ImageOps.invert(c_pores.convert('L', dither=None)).convert('1', dither=None)
+    combined.paste(c_pores, (0, 0), c_pores_mask)
+    combined.show()
+    pass
+
+
 def calc_overlap(slits, pores, x_off=0, y_off=0):
     overlaps = []
+    die_num = 0
     for i, col in enumerate(subsets):
         overlaps.append([])
         for j, row in enumerate(col):
+            die_num += 1
             xs = [x for x, y in row]
             ys = [y for x, y in row]
             minx = min(xs)
@@ -187,15 +200,20 @@ def calc_overlap(slits, pores, x_off=0, y_off=0):
             maxy = max(ys)
             cropped_slit = slits.crop((minx + x_off, miny + y_off, maxx + x_off, maxy + y_off))
             cropped_pores = pores.crop((minx, miny, maxx, maxy))
-            cropped_slit_np = np.asarray(cropped_slit)
-            cropped_pores_np = np.asarray(cropped_pores)
-            overlap_np = cropped_slit_np != cropped_pores_np
-            percent_overlap = 0.0
-            if np.sum(cropped_pores_np):
-                percent_overlap = (np.sum(overlap_np) / float(np.sum(cropped_pores_np))) * 100
-            else:
-                print('no pores??? seems like a bug')
-            print('percent_overlap {:.2f}'.format(percent_overlap))
+            l = list(cropped_slit.getdata())
+            ll = list(cropped_pores.getdata())
+            num_pore_pix = [True for point in ll if point==0] # 0 is a dark pixel
+            num_overlapping = [True for a, b in zip(l, ll) if a == b and a == 0]
+            percent_overlap = (float(len(num_overlapping))/len(num_pore_pix))*100.
+            #cropped_slit_np = np.asarray(cropped_slit)
+            #cropped_pores_np = np.asarray(cropped_pores)
+            #overlap_np = cropped_slit_np != cropped_pores_np
+            #percent_overlap = 0.0
+            #if np.sum(cropped_pores_np):
+            #    percent_overlap = (np.sum(overlap_np) / float(np.sum(cropped_pores_np))) * 100
+            #else:
+            #    print('no pores??? seems like a bug')
+            print('percent_overlap {:.2f} die num {}'.format(percent_overlap, die_num))
             overlaps[i].append((percent_overlap, xs, ys))
             #Image.fromarray
             pass
@@ -204,9 +222,10 @@ def calc_overlap(slits, pores, x_off=0, y_off=0):
 
 
 def do_rotate(degree):
-    ret = l4_output.rotate(degree, expand=True, fillcolor=1)
+    ret = l4_output.rotate(degree, expand=False, fillcolor=1)
     rot_x = (ret.size[0]//2) - (l2_output.size[0]//2)
     rot_y = (ret.size[1]//2) - (l2_output.size[1]//2)
+    print('rot_x {} rot_y {}'.format(rot_x, rot_y))
     overlap_data = calc_overlap(slits=ret, pores=l2_output, x_off=rot_x, y_off=rot_y)
     # l2_resized = Image.new("1", (ret.width, ret.height), color=1)
     # l2_resized.paste(l2_output, (rot_x, rot_y))# ImageOps.invert(l2_output.convert('L')).convert('1'))
@@ -216,19 +235,28 @@ def do_rotate(degree):
     #add_pores(ret, rot_x, rot_y)
     return ret, rot_x, rot_y, overlap_data
 
+rot, rot_x, rot_y, overlap_data = do_rotate(-2.27)
+test = generate_cropped_image(rot, rot_x, rot_y, text='{} deg'.format(-2.27), overlap_data=overlap_data)
+
 images = []
-plus_minu_degree_range = 30
+plus_minu_degree_range = 260
 degree_list = range(-plus_minu_degree_range, plus_minu_degree_range) + range(plus_minu_degree_range, -plus_minu_degree_range-1, -1)
 for i in degree_list:
-    i=i / 10.
+    i=i / 100.
     rot, rot_x, rot_y, overlap_data = do_rotate(i)
     # rot.save('rot_{}.png'.format(i))
     images.append(generate_cropped_image(rot, rot_x, rot_y, text='{} deg'.format(i), overlap_data=overlap_data))
     images[-1].save('cropped{}.png'.format(i))
+    draw = ImageDraw.Draw(rot)
+    draw.rectangle(((rot_x, rot_y), (rot_x + l2_output.width, rot_y + l2_output.height)), fill=None, outline=0)
+    rot.save('full{}.png'.format(i))
     print('just saved cropped{}.png'.format(i))
 
 images = [image.convert('RGB') for image in images]
 images[0].save('animation.gif',
                 save_all=True, append_images=images[1:], optimize=False, duration=15, loop=0)
 
+print('done with gif')
+import subprocess
+subprocess.Popen('ffmpeg -i animation.gif -movflags faststart -pix_fmt yuv420p -vf "crop=trunc(iw/2)*2:trunc(ih/2)*2" video1.mp4', shell=True)
 print('done')

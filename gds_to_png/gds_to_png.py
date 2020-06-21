@@ -7,6 +7,9 @@ import numpy as np
 # l = core.GdsImport(os.path.abspath("Demonpore-Wafer-Map_0degree-Aligned_POREs-SLITs-actual-size_2020-05-27.GDS"), verbose=True)
 # l2, l4 = utils.split_layers(a, [2,4])
 
+BLACK_COLOR = 0
+WHITE_COLOR = 1
+
 l4_gds = core.GdsImport(os.path.abspath("die5_from_topleft_layer4_slits_shown.GDS"), verbose=True)
 l2_gds = core.GdsImport(os.path.abspath("die5_from_topleft_layer2_shown.GDS"), verbose=True)
 
@@ -40,32 +43,46 @@ def add_slits(image):
     img1 = ImageDraw.Draw(image)
     # img1.rectangle(shape)#, fill ="# ffff33", outline ="red")
     for box in l4.elements:
-        corner1, corner2 = box.bounding_box - (int_min_x, int_min_y)
+        corner1, corner2 = (box.bounding_box * quality_factor) - (int_min_x, int_min_y)
         x1, y1 = corner1
         x2, y2 = corner2
-        img1.rectangle(((x1, y1), (x2, y2)), fill=0, outline=0)
+        img1.rectangle(((x1, y1), (x2, y2)), fill=BLACK_COLOR, outline=0)
 
 
 pore_points = []
+pore_point_cache = {}
 
-
-def add_pores(image, off_x=0, off_y=0, collect_points=False):
+def add_pores(image, collect_points=False):
+    img1 = ImageDraw.Draw(image)
     for obj in l2.elements:
-        for coord in obj.points:
-            x, y = coord
-            xx = int((x*quality_factor) - int_min_x)
-            yy = int((y*quality_factor) - int_min_y)
-            try:
-                image.putpixel((xx+off_x, yy+off_y), 0)
-                if collect_points:
-                    pore_points.append((xx, yy))
-            except IndexError as e:
-                print('{} {} w {} h {}'.format(xx, yy, int_w, int_h))
-                raise e
+        corner1, corner2 = (obj.bounding_box * quality_factor) - (int_min_x, int_min_y)
+        x1, y1 = map(int, corner1)
+        x2, y2 = map(int, corner2)
+        img1.rectangle(((x1, y1), (x2, y2)), fill=BLACK_COLOR, outline=0)
+
+        if collect_points:
+            w = int(abs(corner1[0] - corner2[0]))
+            h = int(abs(corner1[1] - corner2[1]))
+            xmin = int(min(corner1[0], corner2[0]))
+            ymin = int(min(corner1[1], corner2[1]))
+            if (w, h) not in pore_point_cache:
+                pore_img = Image.new("1", (w, h), color=WHITE_COLOR)
+                pore_draw = ImageDraw.Draw(pore_img)
+                pore_draw.rectangle(((x1-xmin, y1-ymin), (x2-xmin, y2-ymin)), fill=BLACK_COLOR, outline=0)
+                pore_pts = []
+                for x in range(w):
+                    for y in range(h):
+                        if pore_img.getpixel((x, y)) == 0: # it's black
+                            pore_pts.append((x, y))
+                pore_point_cache[(w, h)] = pore_pts
+            pore_pts = pore_point_cache[(w, h)]
+            for coord in pore_pts:
+                x, y = coord
+                pore_points.append((x+xmin, y+ymin))
 
 
 print('adding slits to new image')
-l4_output = Image.new("1", (int_w + 1, int_h + 1), color=1)
+l4_output = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
 add_slits(l4_output)
 l4_output.save('l4_slits.png')
 print('saved slits to new image')
@@ -74,14 +91,14 @@ l4_mask.save('l4_mask.png')
 print('saved slits mask image')
 
 print('adding pores to new image')
-l2_output = Image.new("1", (int_w + 1, int_h + 1), color=1)
+l2_output = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
 add_pores(l2_output, collect_points=True)
 l2_output.save('l2_pores.png')
 print('saved pores to new image')
 l2_mask = ImageOps.invert(l2_output.convert('L', dither=None)).convert('1', dither=None)
 print('created pores mask image')
 print('pasting slits + pores into new image')
-combined = Image.new("1", (int_w + 1, int_h + 1), color=1)
+combined = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
 combined.paste(l2_output, (0, 0), l2_mask)
 combined.paste(l4_output, (0, 0), l4_mask)
 combined.save("l2_l4.png")
@@ -144,7 +161,7 @@ def generate_cropped_image(combined_image, x_off=0, y_off=0, text='', overlap_da
     sub_w = biggest_pore_group_dims[1]
     subset_image = Image.new("1", (sub_w * len(subsets),
                                    (sub_h + per_group_text_padding) * len(subsets[0])),
-                             color=1)
+                             color=WHITE_COLOR)
     draw = ImageDraw.Draw(subset_image)
     for i, col in enumerate(subsets):
         for j, row in enumerate(col):
@@ -167,7 +184,7 @@ def generate_cropped_image(combined_image, x_off=0, y_off=0, text='', overlap_da
 def debug_calc(c_slits, c_pores):
     c_slits.show()
     c_pores.show()
-    combined = Image.new("1", (c_slits.width, c_slits.height), color=1)
+    combined = Image.new("1", (c_slits.width, c_slits.height), color=WHITE_COLOR)
     combined.paste(c_slits, (0, 0))
     c_pores_mask = ImageOps.invert(c_pores.convert('L', dither=None)).convert('1', dither=None)
     combined.paste(c_pores, (0, 0), c_pores_mask)
@@ -203,7 +220,7 @@ def calc_overlap(slits, pores, x_off=0, y_off=0):
 
 
 def do_rotate(degree):
-    ret = l4_output.rotate(degree, expand=False, fillcolor=1)
+    ret = l4_output.rotate(degree, expand=False, fillcolor=WHITE_COLOR)
     rot_x = (ret.size[0]//2) - (l2_output.size[0]//2)
     rot_y = (ret.size[1]//2) - (l2_output.size[1]//2)
     print('rot_x {} rot_y {}'.format(rot_x, rot_y))
@@ -211,8 +228,8 @@ def do_rotate(degree):
     ret.paste(l2_output, (rot_x, rot_y), l2_mask)
     return ret, rot_x, rot_y, overlap_data
 
-rot, rot_x, rot_y, overlap_data = do_rotate(-2.27)
-test = generate_cropped_image(rot, rot_x, rot_y, text='{} deg'.format(-2.27), overlap_data=overlap_data)
+# rot, rot_x, rot_y, overlap_data = do_rotate(-2.27)
+# test = generate_cropped_image(rot, rot_x, rot_y, text='{} deg'.format(-2.27), overlap_data=overlap_data)
 
 images = []
 plus_minu_degree_range = 260

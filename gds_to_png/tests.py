@@ -1,6 +1,6 @@
 import unittest
 from numpy import array
-from gds_to_png import WHITE_COLOR, Simulation, Image
+from gds_to_png import WHITE_COLOR, BLACK_COLOR, Simulation, Image
 
 
 class MockGdsObject(object):
@@ -19,3 +19,10 @@ class TestSimulationComponents(unittest.TestCase):
         gds_object.elements[1].bounding_box = array(((5, 5), (6, 6)))
         pore_points = Simulation.add_pores(image, gds_object, quality_factor=1.0, int_min_x=0, int_min_y=0)
         self.assertEqual(8, len(pore_points))
+        pix_count = 0
+        for x in range(image.width):
+            for y in range(image.height):
+                if image.getpixel((x,y))==BLACK_COLOR:
+                    pix_count+=1
+                    self.assertIn((x,y), pore_points)
+        self.assertEqual(8, pix_count)

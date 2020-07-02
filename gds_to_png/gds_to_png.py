@@ -4,6 +4,8 @@ from gdsCAD import *
 from PIL import Image, ImageDraw, ImageOps, ImageMath, ImageFont
 import numpy as np
 
+this_dir = os.path.dirname(__file__)
+
 # l = core.GdsImport(os.path.abspath("Demonpore-Wafer-Map_0degree-Aligned_POREs-SLITs-actual-size_2020-05-27.GDS"), verbose=True)
 # l2, l4 = utils.split_layers(a, [2,4])
 
@@ -12,11 +14,12 @@ WHITE_COLOR = 1
 
 
 class Simulation(object):
-    def __init__(self, start_degree, end_degree, step_size=0.1, sweep_forward_then_backward=False, video_output_filename='video.mp4'):
+    def __init__(self, start_degree, end_degree, step_size=0.1, sweep_forward_then_backward=False,
+                 image_output=True, csv_output=True, video_output_filename='video.mp4'):
         font_height = 20
         subset_font_height = 15
-        font = ImageFont.truetype("Pillow/Tests/fonts/FreeMono.ttf", font_height)
-        subset_font = ImageFont.truetype("Pillow/Tests/fonts/FreeMono.ttf", subset_font_height)
+        font = ImageFont.truetype(os.path.abspath(os.path.join(this_dir, "FreeMono.ttf")), font_height)
+        subset_font = ImageFont.truetype(os.path.abspath(os.path.join(this_dir, "FreeMono.ttf")), subset_font_height)
 
         l4_gds = core.GdsImport(os.path.abspath("die5_from_topleft_layer4_slits_shown.GDS"), verbose=True)
         l2_gds = core.GdsImport(os.path.abspath("die5_from_topleft_layer2_shown.GDS"), verbose=True)
@@ -79,6 +82,11 @@ class Simulation(object):
 
         images = []
 
+        one_pixel_is_x_nanometers = l4_gds.unit/quality_factor
+        if csv_output:
+            csv_file = open('csv_output.csv', 'w')
+            csv_file.write('rotation, pore group, number of pixels overlapping, number of meters per pixel, multiples pores overlapping\n')
+
         start_degree = int(start_degree * (1.0 / step_size))
         end_degree = int(end_degree * (1.0 / step_size))
         degree_list = range(start_degree, end_degree)
@@ -88,26 +96,37 @@ class Simulation(object):
             i = i * step_size
             rot, rot_x, rot_y, overlap_data = self.do_rotate(i, l4_output, l2_output, l2_mask, subsets)
             # rot.save('rot_{}.png'.format(i))
-            images.append(self.generate_cropped_image(rot, rot_x, rot_y,
-                                                      cropped_subset_height, cropped_subset_width,
-                                                      '{} deg'.format(i), font, font_height, subset_font,
-                                                      overlap_data, subsets))
-            images[-1].save('cropped{}.png'.format(i))
-            print('just saved cropped{}.png'.format(i))
+            if csv_output:
+                for col_i, col in enumerate(subsets):
+                    for col_j, row in enumerate(col):
+                        overlap_percentage, overlap_num, xs, ys = overlap_data[col_i][col_j]
+                        pore_group = '{}_{}'.format(col_i, col_j)
+                        csv_file.write('{}, {}, {}, {}, {}\n'.format(i, pore_group, overlap_num, one_pixel_is_x_nanometers, ''))
+            if image_output:
+                images.append(self.generate_cropped_image(rot, rot_x, rot_y,
+                                                          cropped_subset_height, cropped_subset_width,
+                                                          '{} deg'.format(i), font, font_height, subset_font,
+                                                          overlap_data, subsets))
+                images[-1].save('cropped{}.png'.format(i))
+                print('just saved cropped{}.png'.format(i))
 
-        images = [image.convert('RGB') for image in images]
-        images[0].save('animation.gif',
-                       save_all=True, append_images=images[1:], optimize=False, duration=15, loop=0)
+        if csv_output:
+            csv_file.close()
 
-        print('done with gif')
-        import subprocess
-        if os.path.isfile(video_output_filename):
-            os.remove(video_output_filename)
-        proc = subprocess.Popen(
-            'ffmpeg -i animation.gif -movflags faststart -pix_fmt yuv420p -vf "crop=trunc(iw/2)*2:trunc(ih/2)*2" {}'
-            .format(video_output_filename),
-            shell=True)
-        proc.communicate()
+        if image_output:
+            images = [image.convert('RGB') for image in images]
+            images[0].save('animation.gif',
+                           save_all=True, append_images=images[1:], optimize=False, duration=15, loop=0)
+
+            print('done with gif')
+            import subprocess
+            if os.path.isfile(video_output_filename):
+                os.remove(video_output_filename)
+            proc = subprocess.Popen(
+                'ffmpeg -i animation.gif -movflags faststart -pix_fmt yuv420p -vf "crop=trunc(iw/2)*2:trunc(ih/2)*2" {}'
+                .format(video_output_filename),
+                shell=True)
+            proc.communicate()
         print('done')
 
     @staticmethod
@@ -201,7 +220,7 @@ class Simulation(object):
         draw = ImageDraw.Draw(subset_image)
         for i, col in enumerate(subsets):
             for j, row in enumerate(col):
-                overlap_percentage, xs, ys = overlap_data[i][j]
+                overlap_percentage, overlap_num, xs, ys = overlap_data[i][j]
                 minx = min(xs)
                 miny = min(ys)
                 maxx = max(xs)
@@ -248,8 +267,8 @@ class Simulation(object):
                 num_pore_pix = [True for point in ll if point==0] # 0 is a dark pixel
                 num_overlapping = [True for a, b in zip(l, ll) if a == b and a == 0]
                 percent_overlap = (float(len(num_overlapping))/len(num_pore_pix))*100.
-                print('percent_overlap {:.2f} die num {}'.format(percent_overlap, die_num))
-                overlaps[i].append((percent_overlap, xs, ys))
+                print('percent_overlap {:.2f} pore group {} ({}_{})'.format(percent_overlap, die_num, i, j))
+                overlaps[i].append((percent_overlap, len(num_overlapping), xs, ys))
                 pass
         print('\n')
         return overlaps
@@ -259,7 +278,7 @@ class Simulation(object):
         rotated_slit_image = slit_image.rotate(degree, expand=False, fillcolor=WHITE_COLOR)
         rot_x = (rotated_slit_image.size[0]//2) - (pore_image.size[0]//2)
         rot_y = (rotated_slit_image.size[1]//2) - (pore_image.size[1]//2)
-        print('rot_x {} rot_y {}'.format(rot_x, rot_y))
+        #print('rot_x {} rot_y {}'.format(rot_x, rot_y))
         overlap_data = Simulation.calc_overlap(slits=rotated_slit_image, pores=pore_image,
                                                pore_group_points=pore_group_points, x_off=rot_x, y_off=rot_y)
         rotated_slit_image.paste(pore_image, (rot_x, rot_y), pore_image_mask)
@@ -268,4 +287,5 @@ class Simulation(object):
 
 if __name__ == '__main__':
     #sim = Simulation(-2.6, 2.6, 0.01, sweep_forward_then_backward=True)
-    sim = Simulation(-0.5, 0.5, 0.1)
+    # sim = Simulation(-0.5, 0.5, 0.1)
+    sim = Simulation(-0.5, 0.5, 0.1, image_output=False, csv_output=True)

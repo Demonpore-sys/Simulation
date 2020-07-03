@@ -13,7 +13,7 @@ WHITE_COLOR = 1
 
 
 class Simulation(object):
-    def __init__(self, start_degree, end_degree, step_size=0.1, sweep_forward_then_backward=False, video_output_filename='video.mp4', do_multicore=False):
+    def __init__(self, start_degree, end_degree, step_size=0.1, sweep_forward_then_backward=False, quality=1, video_output_filename='video.mp4', use_multicore=False):
         font_height = 20
         subset_font_height = 15
 
@@ -35,7 +35,7 @@ class Simulation(object):
         l2h = l2maxs[1] - l2mins[1]
 
         # how many decimal places to keep... 1 means none
-        quality_factor = 1
+        quality_factor = quality # 1 (default)
 
         int_min_x = int(min(l4mins[0], l2mins[0])*quality_factor)
         int_min_y = int(min(l4mins[1], l2mins[1])*quality_factor)
@@ -84,25 +84,24 @@ class Simulation(object):
         if sweep_forward_then_backward:
             degree_list += range(start_degree * -1, (end_degree * -1) - 1, -1)
 
-        # multiprocess this
-        p = multiprocessing.Pool(multiprocessing.cpu_count())
-
-        if not do_multicore:
+        if not use_multicore:
             for i in degree_list:
-                images.append(self.get_rotated_and_cropped_image(i, step_size,
-                              l4_output, l2_output, l2_mask, subsets,
-                              cropped_subset_height, cropped_subset_width, font_height))
-        else:
-            slits_as_array = self.convert_multiprocess_image(l4_output)
-            pores_as_array = self.convert_multiprocess_image(l2_output)
-            pores_mask_as_array = self.convert_multiprocess_image(l2_mask)
-            result = p.map(self.unpack_for_multicore,
-                           [(i, step_size,
-                             slits_as_array, pores_as_array, pores_mask_as_array, subsets,
-                             cropped_subset_height, cropped_subset_width, font_height) for i in degree_list]
-                           )
-            pass
+                image, overlap_data = self.get_rotated_and_cropped_image(
+                    i, step_size,
+                    l4_output, l2_output, l2_mask, subsets,
+                    cropped_subset_height, cropped_subset_width, font_height)
+                images.append(image)
 
+            self.save_images_to_animation(images, video_output_filename)
+        else:
+            self.multicore_data = (
+                degree_list, step_size,
+                l4_output, l2_output, l2_mask, subsets,
+                cropped_subset_height, cropped_subset_width, font_height)
+
+
+    @staticmethod
+    def save_images_to_animation(images, video_output_filename):
         # if save_image:
         #     for i, degree_to_rotate, image in image_list:
         #         image.save('cropped{}.png'.format(degree_to_rotate))
@@ -122,46 +121,48 @@ class Simulation(object):
         proc.communicate()
         print('done')
 
-    def unpack_for_multicore(self, args):
-        return self.get_rotated_and_cropped_image(*args)
-
-    def get_rotated_and_cropped_image(self, degree_to_rotate, step_size,
+    @staticmethod
+    def get_rotated_and_cropped_image(degree_to_rotate, step_size,
                                       slits_image, pores_image, pores_paste_mask, pore_pixel_locations,
                                       cropped_subset_height, cropped_subset_width, font_height):
         return_as_array = False
         if not isinstance(slits_image, Image.Image):
-            slits_image = self.convert_multiprocess_image(slits_image)
-            pores_image = self.convert_multiprocess_image(pores_image)
-            pores_paste_mask = self.convert_multiprocess_image(pores_paste_mask)
+            slits_image = Simulation.convert_multiprocess_image(slits_image)
+            pores_image = Simulation.convert_multiprocess_image(pores_image)
+            pores_paste_mask = Simulation.convert_multiprocess_image(pores_paste_mask)
             return_as_array = True
 
 
         degree_to_rotate = degree_to_rotate * step_size
-        rot, rot_x, rot_y, overlap_data = self.do_rotate(degree_to_rotate, slits_image, pores_image, pores_paste_mask, pore_pixel_locations)
+        rot, rot_x, rot_y, overlap_data = Simulation.do_rotate(degree_to_rotate, slits_image, pores_image, pores_paste_mask, pore_pixel_locations)
+        print('about to generate cropped image')
         # rot.save('rot_{}.png'.format(i))
-        image = self.generate_cropped_image(rot, rot_x, rot_y,
+        image = Simulation.generate_cropped_image(rot, rot_x, rot_y,
                                             cropped_subset_height, cropped_subset_width,
                                             '{} deg'.format(degree_to_rotate), font_height,
                                             overlap_data, pore_pixel_locations)
         print('just saved cropped{}.png'.format(degree_to_rotate))
         if return_as_array:
-            return self.convert_multiprocess_image(image)
-        return image
+            image = Simulation.convert_multiprocess_image(image)
+        return (image, overlap_data)
 
-    def convert_multiprocess_image(self, image_data, size=None, mode=None):#w=None, h=None, mode=None):
+    @staticmethod
+    def convert_multiprocess_image(image_data, size=None, mode=None):#w=None, h=None, mode=None):
         if isinstance(image_data, Image.Image):
+            return np.array(image_data)
             image_data = image_data.getdata()
             # w = image_data.width
             # h = image_data.height
             size = image_data.size
             mode = image_data.mode
             return (image_data, size, mode)
-            #return np.array(image_data)
+            #
         else: #it's raw data
+            return Image.fromarray(image_data)
             n = Image.new(mode, size)#(w,h))
             n.putdata(image_data)
             return n
-            #return Image.fromarray(image_data)
+            #
 
     @staticmethod
     def add_slits(image, l4, quality_factor, int_min_x, int_min_y):
@@ -321,6 +322,84 @@ class Simulation(object):
         return rotated_slit_image, rot_x, rot_y, overlap_data
 
 
+# def really_do_multicore(send_q, rcv_q):
+#     Simulation.unpack_for_multicore
+def unpack_for_multicore(i, degree_to_rotate, step_size,
+    slits_image, pores_image, pores_paste_mask, pore_pixel_locations,
+    cropped_subset_height, cropped_subset_width, font_height):
+    image, overlap = Simulation.get_rotated_and_cropped_image(
+        degree_to_rotate, step_size,
+        slits_image, pores_image, pores_paste_mask, pore_pixel_locations,
+        cropped_subset_height, cropped_subset_width, font_height)
+    #image_q.put((i, degree_to_rotate, image, overlap))
+    return (i, degree_to_rotate, image, overlap)
+
+def do_multicore(video_output_filename, args):
+    # multiprocess this
+    print('starting multicore procedure using {} cores'.format(multiprocessing.cpu_count()))
+    (degree_list, step_size,
+     slits_image, pores_image, pores_image_mask,
+     subsets,
+     cropped_subset_height, cropped_subset_width, font_height) = args
+    p = multiprocessing.Pool(multiprocessing.cpu_count())
+    send_q = multiprocessing.Queue()
+    rcv_q = multiprocessing.Queue()
+    slits_as_array = Simulation.convert_multiprocess_image(slits_image)
+    pores_as_array = Simulation.convert_multiprocess_image(pores_image)
+    pores_mask_as_array = Simulation.convert_multiprocess_image(pores_image_mask)
+    jobs = []
+    num_degrees = len(degree_list)
+    job_results = []
+    print('starting to submit jobs')
+    for i, degree_num in enumerate(degree_list):
+        job = (i, degree_num, step_size,
+               slits_as_array, pores_as_array, pores_mask_as_array,
+               #None, None, None,
+               subsets,
+               cropped_subset_height, cropped_subset_width, font_height)
+        #jobs.append((send_q, rcv_q))
+        #send_q.put(job)
+        print('submitted job {} of {}'.format(i, num_degrees))
+        job_results.append(p.apply_async(unpack_for_multicore,
+                                job))
+    # result = p.map(Simulation.unpack_for_multicore,
+    #                 jobs)
+
+    print('closing the job pool to new jobs')
+    # close the pool so new jobs can't be added
+    p.close()
+    print('waiting for jobs to finish')
+    # wait for all current jobs to finish running
+    p.join()
+    print('all jobs finished')
+    results = [jb.get() for jb in job_results]
+    print('got all results')
+    # (i, degree_to_rotate, image, overlap)
+    result_data = []
+    #for degree_num in degree_list:
+    #    result_data.append(rcv_q.get(block=True, timeout=100))
+    #results_sorted = sorted(result_data, key=lambda data: data[0])
+    results_sorted = sorted(results, key=lambda data: data[0])
+    images = [Simulation.convert_multiprocess_image(data[2]) for data in results_sorted]
+
+
+    with open('overlap_multicore.csv', 'w') as overlap_csv:
+        overlap_csv.write('degree, group, percentage\n')
+        for data in results_sorted:
+            deg = data[1]
+            overlap_data = data[3]
+            for i, col in enumerate(subsets):
+                for j, row in enumerate(col):
+                    overlap_percentage, xs, ys = overlap_data[i][j]
+                    overlap_csv.write('{},{},{}\n'.format(deg, '{}_{}'.format(i,j), overlap_percentage))
+
+    Simulation.save_images_to_animation(images, video_output_filename)
+    pass
+
+
 if __name__ == '__main__':
     #sim = Simulation(-2.6, 2.6, 0.01, sweep_forward_then_backward=True)
-    sim = Simulation(-0.5, 0.5, 0.1, sweep_forward_then_backward=True, do_multicore=True)
+    use_multicore = True
+    sim = Simulation(-0.1, 0.1, 0.1, sweep_forward_then_backward=True, use_multicore=use_multicore, quality=1)
+    if use_multicore:
+        do_multicore('multicore_made.mp4', sim.multicore_data)

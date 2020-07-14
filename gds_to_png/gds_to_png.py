@@ -1,4 +1,5 @@
 import sys
+import csv
 import os.path
 from gdsCAD import *
 from PIL import Image, ImageDraw, ImageOps, ImageMath, ImageFont
@@ -13,9 +14,10 @@ WHITE_COLOR = 1
 
 
 class Simulation(object):
-    def __init__(self, start_degree, end_degree, step_size=0.1, sweep_forward_then_backward=False, quality=1, video_output_filename='video.mp4', use_multicore=False):
-        font_height = 20
-        subset_font_height = 15
+    def __init__(self, start_degree, end_degree, step_size=0.1, sweep_forward_then_backward=False, quality=1, video_output_filename='video.mp4', use_multicore=False, save_images=True):
+        self.font_height = 20
+        self.subset_font_height = 15
+        self.multicore_data = None
 
         l4_gds = core.GdsImport(os.path.abspath("die5_from_topleft_layer4_slits_shown.GDS"), verbose=True)
         l2_gds = core.GdsImport(os.path.abspath("die5_from_topleft_layer2_shown.GDS"), verbose=True)
@@ -45,16 +47,50 @@ class Simulation(object):
 
         print('found bounding box for all pores on this die')
         print('adding slits to new image')
-        l4_output = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
-        self.add_slits(l4_output, l4, quality_factor, int_min_x, int_min_y)
+        l4_output = None
+        l2_output = None
+        if save_images:
+            l4_output = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
+            l2_output = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
+        self.add_slits(l4_output, l4, quality_factor, int_min_x, int_min_y, save_images)
+        print('adding pores to new image')
+        pore_points = self.add_pores(l2_output, l2, quality_factor, int_min_x, int_min_y, save_images)
+        subsets = self.do_binning(pore_points)
+        print('binned GDS points into dies/clusters')
+        if save_images:
+            self.l4_output = l4_output
+            self.l2_output = l2_output
+            self.subsets = subsets
+            self.sweep_forward_then_backward = sweep_forward_then_backward
+            self.video_output_filename = video_output_filename
+            self.start_degree = start_degree
+            self.end_degree = end_degree
+            self.step_size = step_size
+            self.use_multicore = use_multicore
+            self.int_w = int_w
+            self.int_h = int_h
+            self.do_simulation_with_images()
+
+    def do_simulation_with_images(self):
+        l4_output = self.l4_output
+        l2_output = self.l2_output
+        subsets = self.subsets
+        font_height = self.font_height
+        subset_font_height = self.subset_font_height
+        int_w = self.int_w
+        int_h = self.int_h
+        start_degree = self.start_degree
+        end_degree = self.end_degree
+        step_size = self.step_size
+        sweep_forward_then_backward = self.sweep_forward_then_backward
+        video_output_filename = self.video_output_filename
+        use_multicore = self.use_multicore
+
         l4_output.save('l4_slits.png')
         print('saved slits to new image')
         l4_mask = ImageOps.invert(l4_output.convert('L', dither=None)).convert('1', dither=None)
         l4_mask.save('l4_mask.png')
         print('saved slits mask image')
-        print('adding pores to new image')
-        l2_output = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
-        pore_points = self.add_pores(l2_output, l2, quality_factor, int_min_x, int_min_y)
         l2_output.save('l2_pores.png')
         print('saved pores to new image')
         l2_mask = ImageOps.invert(l2_output.convert('L', dither=None)).convert('1', dither=None)
@@ -66,8 +102,7 @@ class Simulation(object):
         combined.save("l2_l4.png")
         print('saved pores+slits combination image')
 
-        subsets = self.do_binning(pore_points)
-        print('binned GDS points into dies/clusters')
+
 
         biggest_pore_group_dims = self.find_largest_pore_group_size(subsets)
         cropped_subset_height = biggest_pore_group_dims[0]
@@ -165,26 +200,41 @@ class Simulation(object):
             #
 
     @staticmethod
-    def add_slits(image, l4, quality_factor, int_min_x, int_min_y):
-        img1 = ImageDraw.Draw(image)
+    def add_slits(image, l4, quality_factor, int_min_x, int_min_y, save_images):
+        if save_images:
+            img1 = ImageDraw.Draw(image)
+        slits_csv_file = open('slits_corner_coords.csv', 'w')
+        slits_csv_writer = csv.writer(slits_csv_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        slits_csv_writer.writerow(['x1', 'y1', 'x2', 'y2'])
         # img1.rectangle(shape)#, fill ="# ffff33", outline ="red")
         for box in l4.elements:
             corner1, corner2 = (box.bounding_box * quality_factor) - (int_min_x, int_min_y)
             x1, y1 = corner1
             x2, y2 = corner2
-            img1.rectangle(((x1, y1), (x2, y2)), fill=BLACK_COLOR, outline=0)
+            if save_images:
+                img1.rectangle(((x1, y1), (x2, y2)), fill=BLACK_COLOR, outline=0)
+            slits_csv_writer.writerow((x1, y1, x2, y2))
+        slits_csv_file.close()
 
     @staticmethod
-    def add_pores(image, l2, quality_factor, int_min_x, int_min_y):
+    def add_pores(image, l2, quality_factor, int_min_x, int_min_y, save_images):
         pore_points = []
         pore_point_cache = {}
-        img1 = ImageDraw.Draw(image)
+        if save_images:
+            img1 = ImageDraw.Draw(image)
+        pores_csv_file = open('pores_corner_coords.csv', 'w')
+        pores_csv_writer = csv.writer(pores_csv_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        pores_csv_writer.writerow(['x1', 'y1', 'x2', 'y2'])
+
         for obj in l2.elements:
             corner1, corner2 = (obj.bounding_box * quality_factor) - (int_min_x, int_min_y)
             x1, y1 = map(int, corner1)
             x2, y2 = map(int, corner2)
-            img1.rectangle(((x1, y1), (x2, y2)), fill=BLACK_COLOR, outline=0)
-
+            if save_images:
+                img1.rectangle(((x1, y1), (x2, y2)), fill=BLACK_COLOR, outline=0)
+            else:
+                pores_csv_writer.writerow((x1, y1, x2, y2))
+                continue
             # collect the points that make up the given rectangle
             w = int(abs(corner1[0] - corner2[0])) + 1
             h = int(abs(corner1[1] - corner2[1])) + 1
@@ -204,6 +254,7 @@ class Simulation(object):
             for coord in pore_pts:
                 x, y = coord
                 pore_points.append((x+xmin, y+ymin))
+        pores_csv_file.close()
         return pore_points
 
     @staticmethod
@@ -398,8 +449,9 @@ def do_multicore(video_output_filename, args):
 
 
 if __name__ == '__main__':
-    #sim = Simulation(-2.6, 2.6, 0.01, sweep_forward_then_backward=True)
-    use_multicore = True
-    sim = Simulation(-0.1, 0.1, 0.1, sweep_forward_then_backward=True, use_multicore=use_multicore, quality=1)
-    if use_multicore:
+    # WARNING!!!! Don't use quality of more than 1 on a normal PC is you're using save_images=Treu  ... it will eat up all your RAM and lock up your machine
+    sim = Simulation(-0.1, 0.1, 0.1, sweep_forward_then_backward=True, use_multicore=True, quality=1000, save_images=False)
+
+    # sim = Simulation(-0.1, 0.1, 0.1, sweep_forward_then_backward=True, use_multicore=True, quality=1)
+    if sim.multicore_data:
         do_multicore('multicore_made.mp4', sim.multicore_data)

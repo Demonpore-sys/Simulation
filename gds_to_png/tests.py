@@ -17,7 +17,7 @@ class TestSimulationComponents(unittest.TestCase):
         gds_object = MockGdsObject(2, ((0,0), (10, 10)))
         gds_object.elements[0].bounding_box = array(((0,0), (1,1)))
         gds_object.elements[1].bounding_box = array(((5, 5), (6, 6)))
-        pore_points = Simulation.add_pores(image, gds_object, quality_factor=1.0, int_min_x=0, int_min_y=0)
+        pore_points = Simulation.add_pores(image, gds_object, quality_factor=1.0, int_min_x=0, int_min_y=0, save_images=True)
         self.assertEqual(8, len(pore_points))
         pix_count = 0
         for x in range(image.width):

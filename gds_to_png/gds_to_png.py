@@ -1,9 +1,10 @@
 import sys
+import csv
 import os.path
 from gdsCAD import *
 from PIL import Image, ImageDraw, ImageOps, ImageMath, ImageFont
 import numpy as np
-
+import multiprocessing
 this_dir = os.path.dirname(__file__)
 
 # l = core.GdsImport(os.path.abspath("Demonpore-Wafer-Map_0degree-Aligned_POREs-SLITs-actual-size_2020-05-27.GDS"), verbose=True)
@@ -14,15 +15,23 @@ WHITE_COLOR = 1
 
 
 class Simulation(object):
-    def __init__(self, start_degree, end_degree, step_size=0.1, sweep_forward_then_backward=False,
-                 image_output=True, csv_output=True, video_output_filename='video.mp4'):
-        font_height = 20
-        subset_font_height = 15
-        font = ImageFont.truetype(os.path.abspath(os.path.join(this_dir, "FreeMono.ttf")), font_height)
-        subset_font = ImageFont.truetype(os.path.abspath(os.path.join(this_dir, "FreeMono.ttf")), subset_font_height)
+    def __init__(self, start_degree, end_degree, step_size=0.1, sweep_forward_then_backward=False, quality=1,
+                 video_output_filename='video.mp4', use_multicore=False, save_images=True, image_simulation=True):
+        self.font_height = 20
+        self.subset_font_height = 15
+        self.multicore_data = None
+        self.use_multicore = use_multicore
+        self.start_degree = start_degree
+        self.end_degree = end_degree
+        self.step_size = step_size
+        self.sweep_forward_then_backward = sweep_forward_then_backward
+        self.video_output_filename = video_output_filename
+        self.save_images = save_images
+        self.image_simulation = image_simulation
 
         l4_gds = core.GdsImport(os.path.abspath("die5_from_topleft_layer4_slits_shown.GDS"), verbose=True)
         l2_gds = core.GdsImport(os.path.abspath("die5_from_topleft_layer2_shown.GDS"), verbose=True)
+        self.gds_unit = l4_gds.unit
 
         print('imported GDS units {} precision {}'.format(l4_gds.unit, l4_gds.precision))
         tl_4 = l4_gds.top_level()
@@ -39,41 +48,48 @@ class Simulation(object):
         l2h = l2maxs[1] - l2mins[1]
 
         # how many decimal places to keep... 1 means none
-        quality_factor = 1
+        self.quality_factor = quality # 1 (default)
 
-        int_min_x = int(min(l4mins[0], l2mins[0])*quality_factor)
-        int_min_y = int(min(l4mins[1], l2mins[1])*quality_factor)
+        int_min_x = int(min(l4mins[0], l2mins[0])*self.quality_factor)
+        int_min_y = int(min(l4mins[1], l2mins[1])*self.quality_factor)
 
-        int_h = int(max(l2h, l4h)*quality_factor)
-        int_w = int(max(l2w, l4w)*quality_factor)
+        self.int_h = int(max(l2h, l4h)*self.quality_factor)
+        self.int_w = int(max(l2w, l4w)*self.quality_factor)
 
         print('found bounding box for all pores on this die')
         print('adding slits to new image')
-        l4_output = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
-        self.add_slits(l4_output, l4, quality_factor, int_min_x, int_min_y)
-        l4_output.save('l4_slits.png')
+        self.l4_output = None
+        self.l2_output = None
+        if self.image_simulation:
+            self.l4_output = Image.new("1", (self.int_w + 1, self.int_h + 1), color=WHITE_COLOR)
+            self.l2_output = Image.new("1", (self.int_w + 1, self.int_h + 1), color=WHITE_COLOR)
+        self.add_slits(self.l4_output, l4, self.quality_factor, int_min_x, int_min_y, self.image_simulation)
+        print('adding pores to new image')
+        pore_points = self.add_pores(self.l2_output, l2, self.quality_factor, int_min_x, int_min_y, self.image_simulation)
+        self.subsets = self.do_binning(pore_points)
+        print('binned GDS points into dies/clusters')
+        if self.image_simulation:
+            self.do_simulation_with_images()
+
+    def do_simulation_with_images(self):
+        subset_font_height = self.subset_font_height
+        self.l4_output.save('l4_slits.png')
         print('saved slits to new image')
-        l4_mask = ImageOps.invert(l4_output.convert('L', dither=None)).convert('1', dither=None)
+        l4_mask = ImageOps.invert(self.l4_output.convert('L', dither=None)).convert('1', dither=None)
         l4_mask.save('l4_mask.png')
         print('saved slits mask image')
-        print('adding pores to new image')
-        l2_output = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
-        pore_points = self.add_pores(l2_output, l2, quality_factor, int_min_x, int_min_y)
-        l2_output.save('l2_pores.png')
+        self.l2_output.save('l2_pores.png')
         print('saved pores to new image')
-        l2_mask = ImageOps.invert(l2_output.convert('L', dither=None)).convert('1', dither=None)
+        l2_mask = ImageOps.invert(self.l2_output.convert('L', dither=None)).convert('1', dither=None)
         print('created pores mask image')
         print('pasting slits + pores into new image')
-        combined = Image.new("1", (int_w + 1, int_h + 1), color=WHITE_COLOR)
-        combined.paste(l2_output, (0, 0), l2_mask)
-        combined.paste(l4_output, (0, 0), l4_mask)
+        combined = Image.new("1", (self.int_w + 1, self.int_h + 1), color=WHITE_COLOR)
+        combined.paste(self.l2_output, (0, 0), l2_mask)
+        combined.paste(self.l4_output, (0, 0), l4_mask)
         combined.save("l2_l4.png")
         print('saved pores+slits combination image')
 
-        subsets = self.do_binning(pore_points)
-        print('binned GDS points into dies/clusters')
-
-        biggest_pore_group_dims = self.find_largest_pore_group_size(subsets)
+        biggest_pore_group_dims = self.find_largest_pore_group_size(self.subsets)
         cropped_subset_height = biggest_pore_group_dims[0]
         cropped_subset_width = biggest_pore_group_dims[1]
 
@@ -82,74 +98,138 @@ class Simulation(object):
 
         images = []
 
-        one_pixel_is_x_nanometers = l4_gds.unit/quality_factor
-        if csv_output:
-            csv_file = open('csv_output.csv', 'w')
-            csv_file.write('rotation, pore group, number of pixels overlapping, number of meters per pixel, multiples pores overlapping\n')
+        one_pixel_is_x_nanometers = self.gds_unit/self.quality_factor
 
-        start_degree = int(start_degree * (1.0 / step_size))
-        end_degree = int(end_degree * (1.0 / step_size))
-        degree_list = range(start_degree, end_degree)
-        if sweep_forward_then_backward:
-            degree_list += range(start_degree * -1, (end_degree * -1) - 1, -1)
-        for i in degree_list:
-            i = i * step_size
-            rot, rot_x, rot_y, overlap_data = self.do_rotate(i, l4_output, l2_output, l2_mask, subsets)
-            # rot.save('rot_{}.png'.format(i))
-            if csv_output:
-                for col_i, col in enumerate(subsets):
+
+        self.start_degree = int(self.start_degree * (1.0 / self.step_size))
+        self.end_degree = int(self.end_degree * (1.0 / self.step_size))
+        degree_list = range(self.start_degree, self.end_degree)
+        if self.sweep_forward_then_backward:
+            degree_list += range(self.start_degree * -1, (self.end_degree * -1) - 1, -1)
+
+        if not self.use_multicore:
+            simulation_csv_file = self.start_simulation_csv_file()
+            for i in degree_list:
+                image, overlap_data = self.get_rotated_and_cropped_image(
+                    i, self.step_size,
+                    self.l4_output, self.l2_output, l2_mask, self.subsets,
+                    cropped_subset_height, cropped_subset_width, self.font_height)
+                for col_i, col in enumerate(self.subsets):
                     for col_j, row in enumerate(col):
                         overlap_percentage, overlap_num, xs, ys = overlap_data[col_i][col_j]
                         pore_group = '{}_{}'.format(col_i, col_j)
-                        csv_file.write('{}, {}, {}, {}, {}\n'.format(i, pore_group, overlap_num, one_pixel_is_x_nanometers, ''))
-            if image_output:
-                images.append(self.generate_cropped_image(rot, rot_x, rot_y,
-                                                          cropped_subset_height, cropped_subset_width,
-                                                          '{} deg'.format(i), font, font_height, subset_font,
-                                                          overlap_data, subsets))
-                images[-1].save('cropped{}.png'.format(i))
-                print('just saved cropped{}.png'.format(i))
+                        self.write_simulation_csv_line(simulation_csv_file, i, pore_group,
+                                                       overlap_num, overlap_percentage,
+                                                       one_pixel_is_x_nanometers, '')
+                if self.save_images:
+                    images.append(image)
+            if self.save_images:
+                self.save_images_to_animation(images, self.video_output_filename)
+            simulation_csv_file.close()
+        else:
+            self.multicore_data = (
+                degree_list, self.step_size,
+                self.l4_output, self.l2_output, l2_mask, self.subsets,
+                cropped_subset_height, cropped_subset_width, self.font_height)
 
-        if csv_output:
-            csv_file.close()
+    @staticmethod
+    def start_simulation_csv_file():
+        csv_file = open('csv_output.csv', 'w')
+        csv_file.write('rotation, pore group, number of pixels overlapping, percent overlap, number of meters per pixel, multiples pores overlapping\n')
+        return  csv_file
 
-        if image_output:
-            images = [image.convert('RGB') for image in images]
-            images[0].save('animation.gif',
-                           save_all=True, append_images=images[1:], optimize=False, duration=15, loop=0)
+    @staticmethod
+    def write_simulation_csv_line(csv_file, degree, group, pix_overlap, percent_overlap, meters_per_pix, num_pores_overlapping):
+        csv_file.write('{}, {}, {}, {}, {}, {}\n'.format(degree, group, pix_overlap, percent_overlap, meters_per_pix, num_pores_overlapping))
 
-            print('done with gif')
-            import subprocess
-            if os.path.isfile(video_output_filename):
-                os.remove(video_output_filename)
-            proc = subprocess.Popen(
-                'ffmpeg -i animation.gif -movflags faststart -pix_fmt yuv420p -vf "crop=trunc(iw/2)*2:trunc(ih/2)*2" {}'
-                .format(video_output_filename),
-                shell=True)
-            proc.communicate()
+    @staticmethod
+    def save_images_to_animation(images, video_output_filename):
+        # if save_image:
+        #     for i, degree_to_rotate, image in image_list:
+        #         image.save('cropped{}.png'.format(degree_to_rotate))
+
+        images = [image.convert('RGB') for image in images]
+        images[0].save('animation.gif',
+                       save_all=True, append_images=images[1:], optimize=False, duration=1, loop=0)
+
+        print('done with gif')
+        import subprocess
+        if os.path.isfile(video_output_filename):
+            os.remove(video_output_filename)
+        proc = subprocess.Popen(
+            'ffmpeg -i animation.gif -movflags faststart -pix_fmt yuv420p -vf "crop=trunc(iw/2)*2:trunc(ih/2)*2" {}'
+            .format(video_output_filename),
+            shell=True)
+        proc.communicate()
         print('done')
 
     @staticmethod
-    def add_slits(image, l4, quality_factor, int_min_x, int_min_y):
-        img1 = ImageDraw.Draw(image)
+    def get_rotated_and_cropped_image(degree_to_rotate, step_size,
+                                      slits_image, pores_image, pores_paste_mask, pore_pixel_locations,
+                                      cropped_subset_height, cropped_subset_width, font_height):
+        return_as_array = False
+        if not isinstance(slits_image, Image.Image):
+            slits_image = Simulation.convert_multiprocess_image(slits_image)
+            pores_image = Simulation.convert_multiprocess_image(pores_image)
+            pores_paste_mask = Simulation.convert_multiprocess_image(pores_paste_mask)
+            return_as_array = True
+
+
+        degree_to_rotate = degree_to_rotate * step_size
+        rot, rot_x, rot_y, overlap_data = Simulation.do_rotate(degree_to_rotate, slits_image, pores_image, pores_paste_mask, pore_pixel_locations)
+        print('about to generate cropped image')
+        # rot.save('rot_{}.png'.format(i))
+        image = Simulation.generate_cropped_image(rot, rot_x, rot_y,
+                                            cropped_subset_height, cropped_subset_width,
+                                            '{} deg'.format(degree_to_rotate), font_height,
+                                            overlap_data, pore_pixel_locations)
+        print('just saved cropped{}.png'.format(degree_to_rotate))
+        if return_as_array:
+            image = Simulation.convert_multiprocess_image(image)
+        return (image, overlap_data)
+
+    @staticmethod
+    def convert_multiprocess_image(image_data, size=None, mode=None):#w=None, h=None, mode=None):
+        if isinstance(image_data, Image.Image):
+            return np.array(image_data)
+        else: #it's raw data
+            return Image.fromarray(image_data)
+
+    @staticmethod
+    def add_slits(image, l4, quality_factor, int_min_x, int_min_y, save_images):
+        if save_images:
+            img1 = ImageDraw.Draw(image)
+        slits_csv_file = open('slits_corner_coords.csv', 'w')
+        slits_csv_writer = csv.writer(slits_csv_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        slits_csv_writer.writerow(['x1', 'y1', 'x2', 'y2'])
         # img1.rectangle(shape)#, fill ="# ffff33", outline ="red")
         for box in l4.elements:
             corner1, corner2 = (box.bounding_box * quality_factor) - (int_min_x, int_min_y)
             x1, y1 = corner1
             x2, y2 = corner2
-            img1.rectangle(((x1, y1), (x2, y2)), fill=BLACK_COLOR, outline=0)
+            if save_images:
+                img1.rectangle(((x1, y1), (x2, y2)), fill=BLACK_COLOR, outline=0)
+            slits_csv_writer.writerow((x1, y1, x2, y2))
+        slits_csv_file.close()
 
     @staticmethod
-    def add_pores(image, l2, quality_factor, int_min_x, int_min_y):
+    def add_pores(image, l2, quality_factor, int_min_x, int_min_y, save_images):
         pore_points = []
         pore_point_cache = {}
-        img1 = ImageDraw.Draw(image)
+        if save_images:
+            img1 = ImageDraw.Draw(image)
+        pores_csv_file = open('pores_corner_coords.csv', 'w')
+        pores_csv_writer = csv.writer(pores_csv_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        pores_csv_writer.writerow(['x1', 'y1', 'x2', 'y2'])
+
         for obj in l2.elements:
             corner1, corner2 = (obj.bounding_box * quality_factor) - (int_min_x, int_min_y)
             x1, y1 = map(int, corner1)
             x2, y2 = map(int, corner2)
+            pores_csv_writer.writerow((x1, y1, x2, y2))
+            if not save_images:
+                continue
             img1.rectangle(((x1, y1), (x2, y2)), fill=BLACK_COLOR, outline=0)
-
             # collect the points that make up the given rectangle
             w = int(abs(corner1[0] - corner2[0])) + 1
             h = int(abs(corner1[1] - corner2[1])) + 1
@@ -169,6 +249,7 @@ class Simulation(object):
             for coord in pore_pts:
                 x, y = coord
                 pore_points.append((x+xmin, y+ymin))
+        pores_csv_file.close()
         return pore_points
 
     @staticmethod
@@ -211,8 +292,10 @@ class Simulation(object):
 
     @staticmethod
     def generate_cropped_image(combined_image, x_off, y_off, sub_h, sub_w,
-                               degree_rotation_text, degree_rotation_font, degree_rotation_font_height,
-                               overlap_percent_font, overlap_data, subsets):
+                               degree_rotation_text, degree_rotation_font_height,
+                               overlap_data, subsets):
+        degree_rotation_font = ImageFont.truetype(os.path.abspath(os.path.join(this_dir, "FreeMono.ttf")), 15)
+        overlap_percent_font = ImageFont.truetype(os.path.abspath(os.path.join(this_dir, "FreeMono.ttf")), 20)
         per_group_text_padding = 75
         subset_image = Image.new("1", (sub_w * len(subsets),
                                        (sub_h + per_group_text_padding) * len(subsets[0])),
@@ -285,7 +368,87 @@ class Simulation(object):
         return rotated_slit_image, rot_x, rot_y, overlap_data
 
 
+# def really_do_multicore(send_q, rcv_q):
+#     Simulation.unpack_for_multicore
+def unpack_for_multicore(i, degree_to_rotate, step_size,
+    slits_image, pores_image, pores_paste_mask, pore_pixel_locations,
+    cropped_subset_height, cropped_subset_width, font_height):
+    image, overlap = Simulation.get_rotated_and_cropped_image(
+        degree_to_rotate, step_size,
+        slits_image, pores_image, pores_paste_mask, pore_pixel_locations,
+        cropped_subset_height, cropped_subset_width, font_height)
+    #image_q.put((i, degree_to_rotate, image, overlap))
+    return (i, degree_to_rotate, image, overlap)
+
+
+def do_multicore(video_output_filename, sim_object):
+    # multiprocess this
+    print('starting multicore procedure using {} cores'.format(multiprocessing.cpu_count()))
+    (degree_list, step_size,
+     slits_image, pores_image, pores_image_mask,
+     subsets,
+     cropped_subset_height, cropped_subset_width, font_height) = sim_object.multicore_data
+    p = multiprocessing.Pool(multiprocessing.cpu_count())
+    send_q = multiprocessing.Queue()
+    rcv_q = multiprocessing.Queue()
+    slits_as_array = Simulation.convert_multiprocess_image(slits_image)
+    pores_as_array = Simulation.convert_multiprocess_image(pores_image)
+    pores_mask_as_array = Simulation.convert_multiprocess_image(pores_image_mask)
+    jobs = []
+    num_degrees = len(degree_list)
+    job_results = []
+    print('starting to submit jobs')
+    for i, degree_num in enumerate(degree_list):
+        job = (i, degree_num, step_size,
+               slits_as_array, pores_as_array, pores_mask_as_array,
+               #None, None, None,
+               subsets,
+               cropped_subset_height, cropped_subset_width, font_height)
+        #jobs.append((send_q, rcv_q))
+        #send_q.put(job)
+        print('submitted job {} of {}'.format(i, num_degrees))
+        job_results.append(p.apply_async(unpack_for_multicore,
+                                job))
+    # result = p.map(Simulation.unpack_for_multicore,
+    #                 jobs)
+
+    print('closing the job pool to new jobs')
+    # close the pool so new jobs can't be added
+    p.close()
+    print('waiting for jobs to finish')
+    # wait for all current jobs to finish running
+    p.join()
+    print('all jobs finished')
+    results = [jb.get() for jb in job_results]
+    print('got all results')
+    # (i, degree_to_rotate, image, overlap)
+    result_data = []
+    #for degree_num in degree_list:
+    #    result_data.append(rcv_q.get(block=True, timeout=100))
+    #results_sorted = sorted(result_data, key=lambda data: data[0])
+    results_sorted = sorted(results, key=lambda data: data[0])
+    images = [Simulation.convert_multiprocess_image(data[2]) for data in results_sorted]
+
+    overlap_csv = Simulation.start_simulation_csv_file()
+    for data in results_sorted:
+        deg = data[1]
+        overlap_data = data[3]
+        for i, col in enumerate(subsets):
+            for j, row in enumerate(col):
+                overlap_percentage, overlap_num, xs, ys = overlap_data[i][j]
+                Simulation.write_simulation_csv_line(overlap_csv, deg, group='{}_{}'.format(i,j),
+                                                     pix_overlap=overlap_num, percent_overlap=overlap_percentage,
+                                                     meters_per_pix=sim.gds_unit, num_pores_overlapping='')
+    overlap_csv.close()
+
+    Simulation.save_images_to_animation(images, video_output_filename)
+    pass
+
+
 if __name__ == '__main__':
-    #sim = Simulation(-2.6, 2.6, 0.01, sweep_forward_then_backward=True)
-    # sim = Simulation(-0.5, 0.5, 0.1)
-    sim = Simulation(-0.5, 0.5, 0.1, image_output=False, csv_output=True)
+    # WARNING!!!! Don't use quality of more than 1 on a normal PC is you're using save_images=Treu  ... it will eat up all your RAM and lock up your machine
+    #sim = Simulation(-0.1, 0.1, 0.1, sweep_forward_then_backward=True, use_multicore=True, quality=1000, save_images=False)
+    #sim = Simulation(-0.5, 0.5, 0.1, image_simulation=False, csv_output=True)
+    sim = Simulation(-0.1, 0.1, 0.1, sweep_forward_then_backward=True, use_multicore=True, quality=1)
+    if sim.multicore_data:
+        do_multicore('multicore_made.mp4', sim)

@@ -153,6 +153,7 @@ if __name__ == "__main__":
 	# rotation  - positive angle counter clockwise
 	#			- negative angle clockwise
 	#			approximately 1e-2 degree increments; for 601 angle values about 1.5 minutes of CPU time are required on Grigoriy's aging Core i5 laptop
+	#																	   about 6 minutes when all the slit trajectories (slit corners) are being plotted
 
 	angle_start = -2.5
 	angle_stop = 2.5

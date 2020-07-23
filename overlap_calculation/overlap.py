@@ -126,9 +126,9 @@ if __name__ == "__main__":
 		pores[index-1].append(sg.box(pore_x1, pore_y1, pore_x2, pore_y2))
 		# plot 
 		xp, yp  = pores[index-1][-1].exterior.xy 
-		plt.plot(xp,yp,'r')
+		plt.plot(xp,yp,'k')
 
-	# some preliminaries for the output Excel file
+	# some preliminaries for the output Excel file 
 	
 	wb_output = openpyxl.Workbook(write_only=True)
 	ws_write = wb_output.create_sheet(0)
@@ -152,9 +152,11 @@ if __name__ == "__main__":
 
 	# rotation  - positive angle counter clockwise
 	#			- negative angle clockwise
-	#			approximately 1e-2 degree increments; for 601 angle values about 1.5 minutes of CPU time are required on Grigoriy's old laptop
+	#			approximately 1e-2 degree increments; for 601 angle values about 1.5 minutes of CPU time are required on Grigoriy's aging Core i5 laptop
 
-	angles = np.linspace(-2.5,2.5,601) # angles from negative to positive: counter clockwise rotation
+	angle_start = -2.5
+	angle_stop = 2.5
+	angles = np.linspace(angle_start,angle_stop,601) # angles from negative to positive: counter clockwise rotation
 
 	# obtain and write output data to the Excel file
 
@@ -180,10 +182,35 @@ if __name__ == "__main__":
 			# store data for writing to Excel
 			overlap_at_angle.append(np.round(open_pore_area))
 			overlap_at_angle.append(open_pores)
-			
-			# plot the rotated slits
+
+			# plot the rotated slits, vary color based on rotation angle
+			# rotation is counter clockwise 
+			# 		starts at clockwise deviation (negative angle) from zero angle, goes to counter clockwise (positive angle) deviation
 			xsr,ysr = slit_rot.exterior.xy
-			plt.plot(xsr,ysr,'k')
+			# xsr and ysr contain x and y coordinates of the corners of the rotated shape
+			#	start at bottom right corner, go counter clockwise (i.e up, left, down, right)
+			#		for a rectangle, there will be 5 x values and 5 y values:
+			#			enough information to draw 4 lines and form a closed shape (rectangle) 
+			if angle < 0.0:
+				colour = 'g' # start rotation at the green slit
+			elif angle > 0.0:
+				colour ='r' # finish rotation at the red slit
+			elif angle == 0.0:
+				colour = 'b' # zero rotation (aligned slits and pores) - blue slit
+			else:
+				ValueError
+
+			# plot bottom left and top right corners (as dots) of all rotated slits
+			# this will give a visual representation of slit motion trajectory 
+			# 	we will see which pores are never opened by the slits
+			if angle != angle_start and angle != angle_stop and angle != 0.0:
+				# bottom left corner
+				plt.plot( xsr[3], ysr[3], marker='.', color=colour ) 
+				# top right corner 
+				plt.plot( xsr[1], ysr[1], marker='.', color=colour )  
+			else:
+				# plot rotated slit
+				plt.plot(xsr,ysr,colour) 
 
 		# write to Excel spreadsheet
 		ws_write.append(overlap_at_angle)

@@ -4,13 +4,15 @@ import openpyxl
 from matplotlib import pyplot as plt
 
 import shapely.geometry as sg
-from shapely.affinity import rotate
+from shapely.affinity import translate 
 
 def wafer_group( x, y ):
+
 	# this function is for reading the GDS-based CSV files with x1 y1 and x2 y2 coordinates of the pores and slits  
 	# assign x y coordinates to a group number (from 1 to 16, inclusive) based on the location on the wafer 
 	# this function assumes that the center of rotation (point x=0,y=0) is somewhere around the center of the wafer
 	#		hence the checks in the if statements for positive and negative x and y coordinates
+	
 	if x < -5e6: # nm 
 		if y > 5e6:
 			group = 1
@@ -64,7 +66,7 @@ if __name__ == "__main__":
 	# coordinates of the center of rotation/center of the wafer (from slits_corner_coords.xlsx file)
 
 	center_x = 8478351.0 # nm 
-	center_y = 7565000.977 # nm 
+	center_y = 7565001.0 # nm 
 
 	# open and use Excel file that has coordinates (in nanometers) of bottom left and top right pore corners
 
@@ -133,93 +135,87 @@ if __name__ == "__main__":
 	wb_output = openpyxl.Workbook(write_only=True)
 	ws_write = wb_output.create_sheet(0)
 
-	header1 = ['Angle']	
-	header2 = ['(degrees)']
-	for i in range(16):
-		header1.append('Group')
-		header1.append(str(i+1))
-		header2.append('area (nm^2)')
-		header2.append('opc') # opc = open pore count (i.e. number of open pores) 
-
 	ws_write.append(['Note 0: Group refers to one of 16 groups of slits and pores, top row has groups 1,2,3,4, second row has groups 5-8, and so on '])
-	ws_write.append(['Note 1: negative Angle means clockwise rotation from vertical']) 
-	ws_write.append(['Note 2: positive Angle means counter clockwise rotation from vertical'])
-	ws_write.append(['Note 3: area (nm^2) means the total area within a group of pores that is open due to the overlap of slit and pore(s) '])
-	ws_write.append(['Note 4: "opc" stands for "open pore count", i.e. the number of open pores that contribute to the area (nm^2) mentioned in Note 3 (see above)'])
+	ws_write.append(['Note 1: area (nm^2) means the total area within a group of pores that is open due to the overlap of slit and pore(s) '])
+	ws_write.append(['Note 2: "opc" stands for "open pore count", i.e. the number of open pores that contribute to the area (nm^2) mentioned above'])
 
-	ws_write.append(header1)
-	ws_write.append(header2)
+	# translating the slits by some distance in x and y 
 
-	# rotation  - positive angle counter clockwise
-	#			- negative angle clockwise
-	#			approximately 1e-2 degree increments; for 601 angle values about 1.5 minutes of CPU time are required on Grigoriy's aging Core i5 laptop
-	#																	   about 6 minutes when all the slit trajectories (slit corners) are being plotted
+	x_start = -150000 # nm 
+	x_stop = 150000 # nm 
+	y_start = -300000 # nm 
+	y_stop = 300000 # nm 
+	x_offsets = np.linspace(x_start,x_stop,3) 
+	y_offsets = np.linspace(y_start,y_stop,3)
 
-	angle_start = -2.5
-	angle_stop = 2.5
-	angles = np.linspace(angle_start,angle_stop,601) # angles from negative to positive: counter clockwise rotation
+	# header row with y offsets/displacements relative to the center of the wafer 
+	header = ['x (nm) \\ y (nm)']
+	for y_off in y_offsets:
+		header.append(y_off)
 
 	# obtain and write output data to the Excel file
 
-	for angle in angles: 
-		
-		overlap_at_angle = [] 
-		overlap_at_angle.append(angle)
+	for cs, slit in enumerate(slits): 
 
-		for cs, slit in enumerate(slits): 
-			
-			# rotate slit about the center of the wafer
-			slit_rot = rotate(slit, angle, origin=(0,0)) 
+			# create a new worksheet to store pore overlap data for a particular group of pores
 
-			# check for open pore area within the pore group that corresponds to the slit
-			open_pore_area = 0.0
-			open_pores = 0
-			for pore in pores[cs]: 
-				if slit_rot.intersects(pore):
-					# the area calculation is easy - the answer is already in nm^2 (square nanometers)
-					open_pore_area += slit_rot.intersection(pore).area 
-					open_pores += 1
+			ws_write = wb_output.create_sheet('Group '+str(cs+1)) 
 
-			# store data for writing to Excel
-			overlap_at_angle.append(np.round(open_pore_area))
-			overlap_at_angle.append(open_pores)
+			ws_write.append(['Note: area values are in columns B+ and rows 3+ and are measured in squared nanometers (nm^2)'])
+			ws_write.append(header)
 
-			# plot the rotated slits, vary color based on rotation angle
-			# rotation is counter clockwise 
-			# 		starts at clockwise deviation (negative angle) from zero angle, goes to counter clockwise (positive angle) deviation
-			xsr,ysr = slit_rot.exterior.xy
-			# xsr and ysr contain x and y coordinates of the corners of the rotated shape
-			#	start at bottom right corner, go counter clockwise (i.e up, left, down, right)
-			#		for a rectangle, there will be 5 x values and 5 y values:
-			#			enough information to draw 4 lines and form a closed shape (rectangle) 
-			if angle < 0.0:
-				colour = 'g' # start rotation at the green slit
-			elif angle > 0.0:
-				colour ='r' # finish rotation at the red slit
-			elif angle == 0.0:
-				colour = 'b' # zero rotation (aligned slits and pores) - blue slit
-			else:
-				ValueError
+			for x_off in x_offsets: 
 
-			# plot bottom left and top right corners (as dots) of all rotated slits
-			# this will give a visual representation of slit motion trajectory 
-			# 	we will see which pores are never opened by the slits
-			if angle != angle_start and angle != angle_stop and angle != 0.0:
-				# bottom left corner
-				plt.plot( xsr[3], ysr[3], marker='.', color=colour ) 
-				# top right corner 
-				plt.plot( xsr[1], ysr[1], marker='.', color=colour )  
-			else:
-				# plot rotated slit
-				plt.plot(xsr,ysr,colour) 
+				# list of values where x offset is fixed but y offset varies
 
-		# write to Excel spreadsheet
-		ws_write.append(overlap_at_angle)
-	
+				overlap_at_x_off = [] 
+				overlap_at_x_off.append(x_off)
+				open_pores_at_x_off = []
+				open_pores_at_x_off.append(x_off)
+
+				for y_off in y_offsets:
+
+					# translate the slit relative to the center of the wafer
+					slit_offset = translate( slit, x_off, y_off )
+
+					# check for open pore area within the pore group that corresponds to the slit
+					open_pore_area = 0.0
+					open_pores = 0
+					for pore in pores[cs]: 
+						if slit_offset.intersects(pore):
+							# the area calculation is easy - the answer is already in nm^2 (square nanometers)
+							open_pore_area += slit_offset.intersection(pore).area 
+							open_pores += 1
+
+					# store data for writing to Excel
+					overlap_at_x_off.append(np.round(open_pore_area))
+					open_pores_at_x_off.append(open_pores)
+
+					# plot the offset/translated slits, vary color based on rotation angle 
+					# rotation is counter clockwise 
+					# 		starts at clockwise deviation (negative angle) from zero angle, goes to counter clockwise (positive angle) deviation
+					xs_off,ys_off = slit_offset.exterior.xy
+					# x and y coordinates of the corners of the translated shape
+					# start at bottom right corner, go counter clockwise (i.e up, left, down, right)
+					#  for a rectangle, there will be 5 x values and 5 y values:
+					#   enough information to draw 4 lines and form a closed shape (rectangle) 
+
+					# plot bottom left and top right corners (as dots) of all rotated slits
+					# this will give a visual representation of slit motion trajectory 
+					# 	we will see which pores are never opened by the slits
+					if x_off == 0.0 and y_off == 0.0: 
+						colour = 'b'
+					else:
+						colour = 'k'	
+
+					plt.plot(xs_off,ys_off,colour) 
+
+				# write to Excel spreadsheet
+				ws_write.append(overlap_at_x_off)
+
 	# save the output Excel spreadsheet
 	wb_output.save(filename = 'output_data_overlaps.xlsx')
 
 	# display the final figure
 	plt.axis('equal') 
 	plt.show()
-

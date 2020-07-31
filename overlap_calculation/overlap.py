@@ -92,17 +92,18 @@ if __name__ == "__main__":
 		index = wafer_group( slit_x1, slit_y1 ) 
 		slits[index-1] = sg.box(slit_x1, slit_y1, slit_x2, slit_y2 ) 
 		# plot 
-		xs, ys = slits[index-1].exterior.xy 
-		plt.plot(xs,ys,'b')
-		# add textboxes in the plot
-		if slit_x1 < -5e6:
-			plt.text( 0.95*slit_x1, slit_y1, 'Group '+str(index)) 
-		elif slit_x1 > -5e6 and slit_x1 < 0:
-			plt.text( 0.9*slit_x1, slit_y1, 'Group '+str(index)) 
-		elif slit_x1 > 0 and slit_x1 < 5e6:
-			plt.text( 1.1*slit_x1, slit_y1, 'Group '+str(index)) 
-		else:
-			plt.text( 1.05*slit_x1, slit_y1, 'Group '+str(index)) 
+		if plot_flag:
+			xs, ys = slits[index-1].exterior.xy 
+			plt.plot(xs,ys,'b')
+			# add textboxes in the plot
+			if slit_x1 < -5e6:
+				plt.text( 0.95*slit_x1, slit_y1, 'Group '+str(index)) 
+			elif slit_x1 > -5e6 and slit_x1 < 0:
+				plt.text( 0.9*slit_x1, slit_y1, 'Group '+str(index)) 
+			elif slit_x1 > 0 and slit_x1 < 5e6:
+				plt.text( 1.1*slit_x1, slit_y1, 'Group '+str(index)) 
+			else:
+				plt.text( 1.05*slit_x1, slit_y1, 'Group '+str(index)) 
 
 	# open and use Excel file that has coordinates (in nanometers) of bottom left and top right pore corners
 
@@ -128,8 +129,9 @@ if __name__ == "__main__":
 		index = wafer_group( pore_x1, pore_y1 ) 
 		pores[index-1].append(sg.box(pore_x1, pore_y1, pore_x2, pore_y2))
 		# plot 
-		xp, yp  = pores[index-1][-1].exterior.xy 
-		plt.plot(xp,yp,'k')
+		if plot_flag:
+			xp, yp  = pores[index-1][-1].exterior.xy 
+			plt.plot(xp,yp,'k')
 
 	# some preliminaries for the output Excel file 
 	
